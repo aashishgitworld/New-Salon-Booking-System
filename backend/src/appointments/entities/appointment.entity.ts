@@ -1,43 +1,53 @@
-import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
+import {
+  Entity,
+  Column,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity';
 import { User } from '../../users/entities/user.entity';
-import { Service } from '../../services/entities/service.entity';
+import { Staff } from '../../staff/entities/staff.entity';
+import { Payment } from './payment.entity';
+import { AppointmentService } from './appointment_service.entity';
 
 export enum AppointmentStatus {
   PENDING = 'pending',
   CONFIRMED = 'confirmed',
+  IN_PROGRESS = 'in_progress',
   COMPLETED = 'completed',
   CANCELLED = 'cancelled',
   NO_SHOW = 'no_show',
 }
 
 @Entity('appointments')
-@Index(['startTime', 'endTime'])
 export class Appointment extends BaseEntity {
-  @Column({ name: 'customer_id', type: 'uuid' })
-  customerId: string;
+  @Column({ name: 'user_id', type: 'int' })
+  userId: number;
 
-  @ManyToOne(() => User, (user) => user.appointments, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'customer_id' })
-  customer: User;
-
-  @Column({ name: 'service_id', type: 'uuid' })
-  serviceId: string;
-
-  @ManyToOne(() => Service, (service) => service.appointments, {
-    onDelete: 'RESTRICT',
-    eager: true,
+  @ManyToOne(() => User, {
+    onDelete: 'CASCADE',
   })
-  @JoinColumn({ name: 'service_id' })
-  service: Service;
+  @JoinColumn({ name: 'user_id' })
+  user: User;
 
-  @Index()
-  @Column({ name: 'start_time', type: 'timestamptz' })
-  startTime: Date;
+  @Column({ name: 'staff_id', type: 'int' })
+  staffId: number;
 
-  @Index()
-  @Column({ name: 'end_time', type: 'timestamptz' })
-  endTime: Date;
+  @ManyToOne(() => Staff, {
+    onDelete: 'RESTRICT',
+  })
+  @JoinColumn({ name: 'staff_id' })
+  staff: Staff;
+
+  @Column({ name: 'appointment_date', type: 'date' })
+  appointmentDate: Date;
+
+  @Column({ name: 'start_time', type: 'time' })
+  startTime: string;
+
+  @Column({ name: 'end_time', type: 'time' })
+  endTime: string;
 
   @Column({
     type: 'enum',
@@ -46,15 +56,21 @@ export class Appointment extends BaseEntity {
   })
   status: AppointmentStatus;
 
-  @Column({ type: 'text', nullable: true })
+  @Column({
+    type: 'text',
+    nullable: true,
+  })
   notes: string | null;
 
-  @Column({ name: 'customer_name', type: 'varchar', length: 200, nullable: true })
-  customerName: string | null;
+  @OneToMany(
+    () => AppointmentService,
+    (appointmentService) => appointmentService.appointment,
+  )
+  services: AppointmentService[];
 
-  @Column({ name: 'customer_email', type: 'varchar', length: 255, nullable: true })
-  customerEmail: string | null;
-
-  @Column({ name: 'customer_phone', type: 'varchar', length: 20, nullable: true })
-  customerPhone: string | null;
+  @OneToMany(
+    () => Payment,
+    (payment) => payment.appointment,
+  )
+  payments: Payment[];
 }

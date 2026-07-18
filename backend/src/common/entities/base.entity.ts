@@ -1,3 +1,4 @@
+import { Exclude } from 'class-transformer';
 import {
   PrimaryGeneratedColumn,
   CreateDateColumn,
@@ -8,11 +9,13 @@ import {
 } from 'typeorm';
 
 export abstract class BaseEntity {
+  @Exclude()
   @PrimaryGeneratedColumn()
   id: string;
 
   @Column({ type: 'uuid', unique: true })
   @Generated('uuid')
+  @Exclude()
   guid: string;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })

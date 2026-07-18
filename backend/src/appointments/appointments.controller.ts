@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -16,7 +17,6 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { AppointmentsService } from './appointments.service';
-import { TimeSlotService } from './time-slot.service';
 import {
   CreateAppointmentDto,
   GetAvailableSlotsDto,
@@ -24,18 +24,16 @@ import {
   UpdateAppointmentDto,
 } from './dto/appointment.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { User } from '../users/entities/user.entity';
-import { ServicesService } from '../services/services.service';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { User, UserRole } from '../users/entities/user.entity';
 
 @ApiTags('Appointments')
 @ApiBearerAuth()
 @Controller('appointments')
+@UseGuards(RolesGuard)
 export class AppointmentsController {
-  constructor(
-    private readonly appointmentsService: AppointmentsService,
-    private readonly timeSlotService: TimeSlotService,
-    private readonly servicesService: ServicesService,
-  ) {}
+  constructor(private readonly appointmentsService: AppointmentsService) {}
 
   @Post()
   @ApiOperation({ summary: 'Create a new appointment' })
@@ -63,22 +61,10 @@ export class AppointmentsController {
   })
   @ApiQuery({ name: 'date', example: '2026-05-15' })
   @ApiQuery({ name: 'serviceId' })
+  @ApiQuery({ name: 'staffId', required: false })
   async availableSlots(@Query() query: GetAvailableSlotsDto) {
-    const service = await this.servicesService.findById(query.serviceId);
-    const date = new Date(query.date);
-    const slots = await this.timeSlotService.getAvailableSlots(date, service);
-    return {
-      message: 'Available slots fetched',
-      data: {
-        date: query.date,
-        service: {
-          id: service.id,
-          name: service.name,
-          durationMinutes: service.durationMinutes,
-        },
-        slots,
-      },
-    };
+    const data = await this.appointmentsService.getAvailableSlots(query);
+    return { message: 'Available slots fetched', data };
   }
 
   @Get(':id')
@@ -107,5 +93,13 @@ export class AppointmentsController {
   ) {
     const data = await this.appointmentsService.cancel(id, user);
     return { message: 'Appointment cancelled', data };
+  }
+
+  @Delete(':id/hard')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Permanently delete an appointment (admin)' })
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    await this.appointmentsService.remove(id);
+    return { message: 'Appointment deleted', data: null };
   }
 }

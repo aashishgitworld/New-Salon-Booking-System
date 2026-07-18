@@ -13,6 +13,7 @@ import { AuthModule } from './auth/auth.module';
 import { MailModule } from './mail/mail.module';
 import { ServicesModule } from './services/services.module';
 import { AppointmentsModule } from './appointments/appointments.module';
+import { StaffModule } from './staff/staff.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
@@ -47,6 +48,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
     AuthModule,
     ServicesModule,
     AppointmentsModule,
+    StaffModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

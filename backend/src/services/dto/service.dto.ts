@@ -10,7 +10,6 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { ServiceCategory } from '../entities/service.entity';
 
 export class CreateServiceDto {
   @ApiProperty({ example: "Men's Haircut" })
@@ -23,10 +22,6 @@ export class CreateServiceDto {
   @IsString()
   description?: string;
 
-  @ApiProperty({ enum: ServiceCategory })
-  @IsEnum(ServiceCategory)
-  category: ServiceCategory;
-
   @ApiProperty({ example: 45, description: 'Duration in minutes' })
   @Type(() => Number)
   @IsInt()
@@ -38,11 +33,6 @@ export class CreateServiceDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   price: number;
-
-  @ApiPropertyOptional({ default: true })
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
 }
 
 export class UpdateServiceDto extends PartialType(CreateServiceDto) {}

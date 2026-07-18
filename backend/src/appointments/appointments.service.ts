@@ -5,16 +5,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import {
   Appointment,
   AppointmentStatus,
 } from './entities/appointment.entity';
+import { AppointmentService } from './entities/appointment_service.entity';
+import { Service } from '../services/entities/service.entity';
+import { Staff } from '../staff/entities/staff.entity';
 import { User, UserRole } from '../users/entities/user.entity';
-import { ServicesService } from '../services/services.service';
-import { TimeSlotService } from './time-slot.service';
+import { TimeSlot, TimeSlotService } from './time-slot.service';
 import {
   CreateAppointmentDto,
+  GetAvailableSlotsDto,
   ListAppointmentsDto,
   UpdateAppointmentDto,
 } from './dto/appointment.dto';
@@ -22,57 +25,181 @@ import { PaginatedResponse } from '../common/dto/pagination.dto';
 import { AppointmentsGateway } from './appointments.gateway';
 import { SOCKET_EVENTS } from '../common/constants';
 
+const APPOINTMENT_RELATIONS = [
+  'user',
+  'staff',
+  'services',
+  'services.service',
+  'payments',
+];
+
 @Injectable()
 export class AppointmentsService {
   constructor(
     @InjectRepository(Appointment)
     private readonly appointmentRepository: Repository<Appointment>,
-    private readonly servicesService: ServicesService,
     private readonly timeSlotService: TimeSlotService,
     private readonly appointmentsGateway: AppointmentsGateway,
+    private readonly dataSource: DataSource,
   ) {}
 
+  // --- Write operations (wrapped in a DB transaction) ---
+
   async create(dto: CreateAppointmentDto, user: User): Promise<Appointment> {
-    const service = await this.servicesService.findById(dto.serviceId);
-    if (!service.isActive) {
-      throw new BadRequestException('Service is not available');
-    }
+    const appointment = await this.dataSource.transaction(async (manager) => {
+      const staff = await this.resolveStaff(manager, dto.staffId);
+      const services = await this.resolveServices(manager, dto.serviceIds);
 
-    const startTime = new Date(dto.startTime);
-    const validation = await this.timeSlotService.validateSlot(
-      startTime,
-      service,
-    );
-    if (!validation.valid) {
-      throw new BadRequestException(validation.reason);
-    }
+      const durationMinutes = services.reduce(
+        (sum, s) => sum + s.durationMinutes,
+        0,
+      );
 
-    const endTime = new Date(
-      startTime.getTime() + service.durationMinutes * 60_000,
-    );
+      const validation = await this.timeSlotService.validateSlot(
+        dto.appointmentDate,
+        dto.startTime,
+        durationMinutes,
+        Number(staff.id),
+      );
+      if (!validation.valid) {
+        throw new BadRequestException(validation.reason);
+      }
 
-    const appointment = this.appointmentRepository.create({
-      customerId: user.id,
-      serviceId: service.id,
-      startTime,
-      endTime,
-      status: AppointmentStatus.PENDING,
-      notes: dto.notes,
-      customerName: dto.customerName ?? user.fullName,
-      customerEmail: dto.customerEmail ?? user.email,
-      customerPhone: dto.customerPhone ?? user.phone,
+      const appointmentRepo = manager.getRepository(Appointment);
+      const appointment = appointmentRepo.create({
+        userId: Number(user.id),
+        staffId: Number(staff.id),
+        appointmentDate: dto.appointmentDate as unknown as Date,
+        startTime: this.normalizeTime(dto.startTime),
+        endTime: validation.endTime!,
+        status: AppointmentStatus.PENDING,
+        notes: dto.notes ?? null,
+      });
+      const saved = await appointmentRepo.save(appointment);
+
+      await this.replaceServices(manager, Number(saved.id), services);
+
+      return this.findByIdWithManager(manager, saved.guid);
     });
-
-    const saved = await this.appointmentRepository.save(appointment);
-    const full = await this.findById(saved.id);
 
     this.appointmentsGateway.emitToAll(
       SOCKET_EVENTS.APPOINTMENT_CREATED,
-      full,
+      appointment,
     );
-
-    return full;
+    return appointment;
   }
+
+  async update(
+    id: string,
+    dto: UpdateAppointmentDto,
+    user: User,
+  ): Promise<Appointment> {
+    const updated = await this.dataSource.transaction(async (manager) => {
+      const appointmentRepo = manager.getRepository(Appointment);
+      const appointment = await appointmentRepo.findOne({
+        where: { guid: id },
+        relations: ['services', 'services.service'],
+      });
+      if (!appointment) throw new NotFoundException('Appointment not found');
+      this.assertCanModify(appointment, user);
+
+      let staffId = appointment.staffId;
+      if (dto.staffId) {
+        const staff = await this.resolveStaff(manager, dto.staffId);
+        staffId = Number(staff.id);
+      }
+
+      let services: Service[] | null = null;
+      if (dto.serviceIds) {
+        services = await this.resolveServices(manager, dto.serviceIds);
+      }
+
+      const durationMinutes = (services ?? appointment.services.map((s) => s.service)).reduce(
+        (sum, s) => sum + s.durationMinutes,
+        0,
+      );
+
+      const appointmentDate =
+        dto.appointmentDate ??
+        (appointment.appointmentDate as unknown as string);
+      const startTime = dto.startTime
+        ? this.normalizeTime(dto.startTime)
+        : appointment.startTime;
+
+      // Revalidate when timing, staff, or services change.
+      if (dto.appointmentDate || dto.startTime || dto.staffId || dto.serviceIds) {
+        const validation = await this.timeSlotService.validateSlot(
+          appointmentDate,
+          startTime,
+          durationMinutes,
+          staffId,
+          appointment.guid,
+        );
+        if (!validation.valid) {
+          throw new BadRequestException(validation.reason);
+        }
+        appointment.endTime = validation.endTime!;
+      }
+
+      appointment.staffId = staffId;
+      appointment.appointmentDate = appointmentDate as unknown as Date;
+      appointment.startTime = startTime;
+      appointment.notes = dto.notes ?? appointment.notes;
+      appointment.status = dto.status ?? appointment.status;
+
+      await appointmentRepo.save(appointment);
+
+      if (services) {
+        await this.replaceServices(manager, Number(appointment.id), services);
+      }
+
+      return this.findByIdWithManager(manager, appointment.guid);
+    });
+
+    this.appointmentsGateway.emitToAll(
+      SOCKET_EVENTS.APPOINTMENT_UPDATED,
+      updated,
+    );
+    return updated;
+  }
+
+  async cancel(id: string, user: User): Promise<Appointment> {
+    const updated = await this.dataSource.transaction(async (manager) => {
+      const appointmentRepo = manager.getRepository(Appointment);
+      const appointment = await appointmentRepo.findOne({
+        where: { guid: id },
+      });
+      if (!appointment) throw new NotFoundException('Appointment not found');
+      this.assertCanModify(appointment, user);
+
+      appointment.status = AppointmentStatus.CANCELLED;
+      await appointmentRepo.save(appointment);
+      return this.findByIdWithManager(manager, appointment.guid);
+    });
+
+    this.appointmentsGateway.emitToAll(
+      SOCKET_EVENTS.APPOINTMENT_UPDATED,
+      updated,
+    );
+    return updated;
+  }
+
+  async remove(id: string): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const appointmentRepo = manager.getRepository(Appointment);
+      const appointment = await appointmentRepo.findOne({
+        where: { guid: id },
+      });
+      if (!appointment) throw new NotFoundException('Appointment not found');
+
+      await manager
+        .getRepository(AppointmentService)
+        .delete({ appointmentId: Number(appointment.id) });
+      await appointmentRepo.softRemove(appointment);
+    });
+  }
+
+  // --- Read operations (no transaction) ---
 
   async list(
     query: ListAppointmentsDto,
@@ -83,28 +210,30 @@ export class AppointmentsService {
 
     const qb = this.appointmentRepository
       .createQueryBuilder('appointment')
-      .leftJoinAndSelect('appointment.service', 'service')
-      .leftJoinAndSelect('appointment.customer', 'customer')
-      .orderBy('appointment.startTime', 'DESC');
+      .leftJoinAndSelect('appointment.staff', 'staff')
+      .leftJoinAndSelect('appointment.user', 'user')
+      .leftJoinAndSelect('appointment.services', 'appointmentService')
+      .leftJoinAndSelect('appointmentService.service', 'service')
+      .leftJoinAndSelect('appointment.payments', 'payment')
+      .orderBy('appointment.appointmentDate', 'DESC')
+      .addOrderBy('appointment.startTime', 'DESC');
 
     // Customers only see their own; staff/admin see all
     if (user.role === UserRole.CUSTOMER) {
-      qb.andWhere('appointment.customerId = :uid', { uid: user.id });
+      qb.andWhere('appointment.userId = :uid', { uid: Number(user.id) });
     }
 
     if (query.status) {
       qb.andWhere('appointment.status = :status', { status: query.status });
     }
-    if (query.serviceId) {
-      qb.andWhere('appointment.serviceId = :sid', { sid: query.serviceId });
+    if (query.staffId) {
+      qb.andWhere('staff.guid = :staffGuid', { staffGuid: query.staffId });
     }
     if (query.from) {
-      qb.andWhere('appointment.startTime >= :from', {
-        from: new Date(query.from),
-      });
+      qb.andWhere('appointment.appointmentDate >= :from', { from: query.from });
     }
     if (query.to) {
-      qb.andWhere('appointment.startTime <= :to', { to: new Date(query.to) });
+      qb.andWhere('appointment.appointmentDate <= :to', { to: query.to });
     }
 
     qb.skip((page - 1) * limit).take(limit);
@@ -115,125 +244,124 @@ export class AppointmentsService {
 
   async findById(id: string): Promise<Appointment> {
     const appointment = await this.appointmentRepository.findOne({
-      where: { id },
-      relations: ['service', 'customer'],
+      where: { guid: id },
+      relations: APPOINTMENT_RELATIONS,
     });
     if (!appointment) throw new NotFoundException('Appointment not found');
     return appointment;
   }
 
-  async update(
-    id: string,
-    dto: UpdateAppointmentDto,
-    user: User,
+  async getAvailableSlots(dto: GetAvailableSlotsDto): Promise<{
+    date: string;
+    service: { id: string; name: string; durationMinutes: number };
+    slots: TimeSlot[];
+  }> {
+    const service = await this.dataSource
+      .getRepository(Service)
+      .findOne({ where: { guid: dto.serviceId } });
+    if (!service) throw new NotFoundException('Service not found');
+
+    let staffId: number | undefined;
+    if (dto.staffId) {
+      const staff = await this.dataSource
+        .getRepository(Staff)
+        .findOne({ where: { guid: dto.staffId } });
+      if (!staff) throw new NotFoundException('Staff not found');
+      staffId = Number(staff.id);
+    }
+
+    const slots = await this.timeSlotService.getAvailableSlots(
+      new Date(dto.date),
+      service.durationMinutes,
+      staffId,
+    );
+
+    return {
+      date: dto.date,
+      service: {
+        id: service.guid,
+        name: service.name,
+        durationMinutes: service.durationMinutes,
+      },
+      slots,
+    };
+  }
+
+  // --- Helpers ---
+
+  private normalizeTime(time: string): string {
+    return time.length === 5 ? `${time}:00` : time;
+  }
+
+  private async resolveStaff(
+    manager: EntityManager,
+    staffGuid: string,
+  ): Promise<Staff> {
+    const staff = await manager
+      .getRepository(Staff)
+      .findOne({ where: { guid: staffGuid } });
+    if (!staff) throw new NotFoundException('Staff not found');
+    if (!staff.isActive) {
+      throw new BadRequestException('Staff member is not available');
+    }
+    return staff;
+  }
+
+  private async resolveServices(
+    manager: EntityManager,
+    serviceGuids: string[],
+  ): Promise<Service[]> {
+    const services = await manager
+      .getRepository(Service)
+      .find({ where: { guid: In(serviceGuids) } });
+
+    if (services.length !== serviceGuids.length) {
+      throw new BadRequestException('One or more services were not found');
+    }
+    const inactive = services.find((s) => !s.isActive);
+    if (inactive) {
+      throw new BadRequestException(`Service "${inactive.name}" is not available`);
+    }
+    return services;
+  }
+
+  private async replaceServices(
+    manager: EntityManager,
+    appointmentId: number,
+    services: Service[],
+  ): Promise<void> {
+    const joinRepo = manager.getRepository(AppointmentService);
+    await joinRepo.delete({ appointmentId });
+
+    const links = services.map((service) =>
+      joinRepo.create({
+        appointmentId,
+        serviceId: Number(service.id),
+        price: service.price,
+        durationMinutes: service.durationMinutes,
+      }),
+    );
+    await joinRepo.save(links);
+  }
+
+  private async findByIdWithManager(
+    manager: EntityManager,
+    guid: string,
   ): Promise<Appointment> {
-    const appointment = await this.findById(id);
-    this.assertCanModify(appointment, user);
-
-    let service = appointment.service;
-    if (dto.serviceId && dto.serviceId !== appointment.serviceId) {
-      service = await this.servicesService.findById(dto.serviceId);
-    }
-
-    const newStart = dto.startTime
-      ? new Date(dto.startTime)
-      : appointment.startTime;
-
-    // Revalidate if time or service changed
-    if (dto.startTime || dto.serviceId) {
-      const validation = await this.timeSlotService.validateSlot(
-        newStart,
-        service,
-        appointment.id,
-      );
-      if (!validation.valid) {
-        throw new BadRequestException(validation.reason);
-      }
-    }
-
-    const newEnd = new Date(
-      newStart.getTime() + service.durationMinutes * 60_000,
-    );
-
-    Object.assign(appointment, {
-      serviceId: service.id,
-      startTime: newStart,
-      endTime: newEnd,
-      notes: dto.notes ?? appointment.notes,
-      customerName: dto.customerName ?? appointment.customerName,
-      customerEmail: dto.customerEmail ?? appointment.customerEmail,
-      customerPhone: dto.customerPhone ?? appointment.customerPhone,
-      status: dto.status ?? appointment.status,
+    const appointment = await manager.getRepository(Appointment).findOne({
+      where: { guid },
+      relations: APPOINTMENT_RELATIONS,
     });
-
-    await this.appointmentRepository.save(appointment);
-    const updated = await this.findById(id);
-    this.appointmentsGateway.emitToAll(
-      SOCKET_EVENTS.APPOINTMENT_UPDATED,
-      updated,
-    );
-    return updated;
-  }
-
-  async cancel(id: string, user: User): Promise<Appointment> {
-    const appointment = await this.findById(id);
-    this.assertCanModify(appointment, user);
-    appointment.status = AppointmentStatus.CANCELLED;
-    await this.appointmentRepository.save(appointment);
-    const updated = await this.findById(id);
-    this.appointmentsGateway.emitToAll(
-      SOCKET_EVENTS.APPOINTMENT_UPDATED,
-      updated,
-    );
-    return updated;
-  }
-
-  /** Used by the bulk import flow. Skips the "cannot book in the past" check. */
-  async createInternal(params: {
-    serviceId: string;
-    startTime: Date;
-    customerId?: string;
-    customerName?: string;
-    customerEmail?: string;
-    customerPhone?: string;
-    notes?: string;
-  }): Promise<Appointment> {
-    const service = await this.servicesService.findById(params.serviceId);
-    const endTime = new Date(
-      params.startTime.getTime() + service.durationMinutes * 60_000,
-    );
-
-    // Still check break and conflicts
-    const validation = await this.timeSlotService.validateSlot(
-      params.startTime,
-      service,
-    );
-    if (!validation.valid) {
-      throw new BadRequestException(validation.reason);
-    }
-
-    const appointment = this.appointmentRepository.create({
-      customerId: params.customerId,
-      serviceId: service.id,
-      startTime: params.startTime,
-      endTime,
-      status: AppointmentStatus.CONFIRMED,
-      notes: params.notes,
-      customerName: params.customerName,
-      customerEmail: params.customerEmail,
-      customerPhone: params.customerPhone,
-    });
-    return this.appointmentRepository.save(appointment);
+    if (!appointment) throw new NotFoundException('Appointment not found');
+    return appointment;
   }
 
   private assertCanModify(appointment: Appointment, user: User): void {
     if (
       user.role === UserRole.CUSTOMER &&
-      appointment.customerId !== user.id
+      appointment.userId !== Number(user.id)
     ) {
-      throw new ForbiddenException(
-        'You may only modify your own appointments',
-      );
+      throw new ForbiddenException('You may only modify your own appointments');
     }
   }
 }

@@ -1,52 +1,51 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsDateString,
-  IsEmail,
   IsEnum,
-  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
-  MaxLength,
+  Matches,
 } from 'class-validator';
 import { AppointmentStatus } from '../entities/appointment.entity';
 
+const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+
 export class CreateAppointmentDto {
-  @ApiProperty({ description: 'Service UUID' })
+  @ApiProperty({ description: 'Staff member UUID' })
   @IsUUID()
-  serviceId: string;
+  staffId: string;
 
   @ApiProperty({
-    example: '2026-05-15T10:00:00.000Z',
-    description: 'Appointment start time (ISO 8601)',
+    type: [String],
+    description: 'One or more service UUIDs to book in this appointment',
+  })
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsUUID('all', { each: true })
+  serviceIds: string[];
+
+  @ApiProperty({
+    example: '2026-05-15',
+    description: 'Appointment date (YYYY-MM-DD)',
   })
   @IsDateString()
+  appointmentDate: string;
+
+  @ApiProperty({
+    example: '10:00',
+    description: 'Appointment start time of day (HH:mm)',
+  })
+  @Matches(TIME_REGEX, { message: 'startTime must be a valid HH:mm time' })
   startTime: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   notes?: string;
-
-  @ApiPropertyOptional({
-    description: 'Customer name (required if booking without a user account)',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  customerName?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsEmail()
-  customerEmail?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MaxLength(20)
-  customerPhone?: string;
 }
 
 export class UpdateAppointmentDto extends PartialType(CreateAppointmentDto) {
@@ -67,6 +66,11 @@ export class GetAvailableSlotsDto {
   @ApiProperty({ description: 'Service UUID' })
   @IsUUID()
   serviceId: string;
+
+  @ApiPropertyOptional({ description: 'Optional staff UUID to filter by' })
+  @IsOptional()
+  @IsUUID()
+  staffId?: string;
 }
 
 export class ListAppointmentsDto {
@@ -85,10 +89,10 @@ export class ListAppointmentsDto {
   @IsEnum(AppointmentStatus)
   status?: AppointmentStatus;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Filter by staff UUID' })
   @IsOptional()
   @IsUUID()
-  serviceId?: string;
+  staffId?: string;
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()

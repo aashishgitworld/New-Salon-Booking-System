@@ -143,7 +143,7 @@ export class AuthService {
       );
     } catch (err) {
       this.logger.error(
-        `Failed to send verification email to ${user.email}: ${err.message}`,
+        `Failed to send verification email to ${user.email}`,
       );
       // Don't throw — verification can be resent
     }

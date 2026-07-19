@@ -4,8 +4,11 @@ import { AppointmentService } from '../../appointments/entities/appointment_serv
 import { Expose } from 'class-transformer';
 
 @Entity('services')
+@Index('UQ_SERVICES_NAME', ['name'], {
+  unique: true,
+  where: '"deleted_at" IS NULL',
+})
 export class Service extends BaseEntity {
-  @Index()
   @Column({ type: 'varchar', length: 150 })
   name: string;
 

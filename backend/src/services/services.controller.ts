@@ -30,8 +30,8 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 export class ServicesController {
   constructor(private readonly servicesService: ServicesService) {}
 
-  @Public()
   @Get()
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'List all salon services' })
   @ApiQuery({ name: 'activeOnly', required: false, type: Boolean })
   async list(@Query('activeOnly') activeOnly?: string) {
@@ -40,8 +40,8 @@ export class ServicesController {
     return { message: 'Services fetched', data };
   }
 
-  @Public()
   @Get(':id')
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Get a single service' })
   async get(@Param('id', ParseUUIDPipe) id: string) {
     const data = await this.servicesService.findById(id);
@@ -49,7 +49,7 @@ export class ServicesController {
   }
 
   @Post()
-  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Create a new service (admin/staff)' })
   async create(@Body() dto: CreateServiceDto) {
     const data = await this.servicesService.create(dto);
@@ -57,7 +57,7 @@ export class ServicesController {
   }
 
   @Patch(':id')
-  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Update a service (admin/staff)' })
   async update(
     @Param('id', ParseUUIDPipe) id: string,

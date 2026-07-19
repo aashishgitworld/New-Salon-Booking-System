@@ -51,8 +51,8 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
     StaffModule,
   ],
   providers: [
-    { provide: APP_FILTER, useClass: AllExceptionsFilter },
-    { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
+    // { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    // { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],

@@ -25,12 +25,11 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 
 @ApiTags('Staff')
 @ApiBearerAuth()
-@Controller('staff')
+@Controller('staffs')
 @UseGuards(RolesGuard)
 export class StaffController {
   constructor(private readonly staffsService: StaffsService) {}
 
-  @Public()
   @Get()
   @ApiOperation({ summary: 'List all staff members' })
   @ApiQuery({ name: 'activeOnly', required: false, type: Boolean })
@@ -40,7 +39,6 @@ export class StaffController {
     return { message: 'Staff fetched', data };
   }
 
-  @Public()
   @Get(':id')
   @ApiOperation({ summary: 'Get a single staff member' })
   async get(@Param('id', ParseUUIDPipe) id: string) {
